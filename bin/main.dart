@@ -23,6 +23,9 @@ class Device {
   bool infected = false;
   bool disabled = false;
   Set<Device> paired = new Set<Device>();
+  
+  double lat;
+  double lgn;
 }
 
 class Packet {
@@ -139,6 +142,8 @@ Future main() async {
       dv.disabled = false;
       dv.paired = new Set();
       dv.pairing = false;
+      dv.lat = null;
+      dv.lgn = null;
     });
     protectionLevel = 0;
     if (devices.where((dv) => dv.id == "DEAD").isNotEmpty) {
@@ -241,6 +246,10 @@ Future main() async {
     }
   })();*/
   
+  double vecDistance(double ax, double ay, double bx, double by) {
+    return sqrt(pow(ax - bx, 2) + pow(ay - by, 2));
+  }
+  
   Map<String, HttpRequest> pendingReqs = {};
   
   try {
@@ -320,6 +329,9 @@ Future main() async {
               protectionLevel = 1;
             } else if (data["type"] == "secure2") {
               protectionLevel = 2;
+            } else if (data["type"] == "gps") {
+              d.lat = data["pos"][0];
+              d.lgn = data["pos"][1];
             }
           });
           socket.done.then((reason) {
@@ -332,18 +344,22 @@ Future main() async {
             var p = await Process.start("hcidump", ["-r", "/dev/stdin", "-t"]);
             print("pd");
             var requestData = await req.toList();
-            print("ws");
+            print("ws ${requestData.length}");
             stderr.addStream(p.stderr);
+            print("ws2");
             await p.stdin.addStream(new Stream.fromIterable(requestData));
             print("wc");
             await p.stdin.close();
             print("decoding");
             var data = await p.stdout.transform(new Utf8Decoder()).join();
             print(data);
-            //data = data.replaceAll("\n", " ").replaceAll("586524", "\n2017");
+            data = data.replaceAll("\n", " ").replaceAll(new RegExp(r"(586524|2017)"), "\n2017");
             //print(data);
             bool skip_header = true;
             List<List<String>> csv_data = [];
+            
+            csv_data.add([req.headers.value("clid"), ""]);
+            
             var lines = data.split("\n");
             print("${lines.length} lines");
             for (int i = 0; i < lines.length; i++) {
@@ -372,13 +388,52 @@ Future main() async {
         } else if (req.uri.path == "/res") {
           print("METHOD ${req.method}");
           print("${await req.transform(new Utf8Decoder()).join()}");
+          req.response.close();
+        } else if (req.uri.path == "/status") {
+          print("status");
+          await req.response.add(JSON
+            .encode({
+            "dataEntries": devices.where((dv) => dv.lat != null).map((dv) {
+              return <String, dynamic>{
+                "latitude": dv.lat,
+                "longitude": dv.lgn,
+                "macAddress": dv.id,
+                "deviceName": dv.name,
+                "riskLevel": new Random().nextDouble() * 0.5 + 0.5,
+              };
+            }).toList(),
+          }).codeUnits);
+          print("status2");
+          req.response.close();
+          print("status3");
+        } else if (req.uri.path == "/loc") {
+          var locations = ["", "", ""];
+          List<List<double>> lpos = [[], [], []];
+          var risk = [0.0, 0.0, 0.0];
+          locations.forEach((ln) {
+            var i = locations.indexOf(ln);
+            devices.where((dv) => dv.lat != null).forEach((dv) {
+              risk[i] += 1 / vecDistance(dv.lat, dv.lgn, lpos[i][0], lpos[i][1]);
+            });
+          });
+          req.response.add(JSON.encode({
+            "dataEntries": locations.map((ln) {
+              var i = locations.indexOf(ln);
+              return {
+                "hospitalName": ln,
+                "riskLevel": risk[i],
+                "latitude": lpos[i][0],
+              };
+            }),
+          }).codeUnits);
+          req.response.close();
         } else {
           req.response.statusCode = 500;
           req.response.writeln("Die");
           req.response.close();
         }
       } catch (e) {
-        print("error! ${e.toString}");
+        print("error! ${e.toString()}");
       }
     }
   } catch (e) {
